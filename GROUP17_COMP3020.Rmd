@@ -1,0 +1,1103 @@
+---
+title: "Exploring Film Content, Audience Ratings and Actor Collaboration Networks using TMDb Data"
+author: "Sadaf Basiri (22030466), Zoya Adnan (22138863), Xinge Pi (22220977)"
+date: "2026-10-01"
+output: pdf_document
+number_sections: false
+
+---
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(tidyr)
+
+library(tm)
+library(SnowballC)
+library(wordcloud)
+library(RColorBrewer)
+
+library(ggplot2)
+library(igraph)
+```
+
+# 1. Introduction
+
+Films provide a rich source of information for examining patterns in textual content, audience responses and relationships between individuals involved in their production. Online film databases such as The Movie Database (TMDb) provide structured information about films, including descriptions, genres, audience ratings and cast information. This data allows different analytical approaches to be combined to investigate both characteristics of individual films and relationships between films and their accompanied actors.
+
+This project explores film content, audience ratings and actor collaboration networks using data collected from TMDb. The investigation combines text analysis, hypothesis testing, clustering and network analysis to look at different aspects of the film dataset. Text analysis is used to showcase recurring themes within film descriptions, while hypothesis testing looks into whether audience ratings differ between film genres. Then, clustering is used to establish whether films can be clustered according to any similarities in their textual descriptions. Finally, network analysis examines the relationships between actors based on their shared participation in films.
+
+The combination of these approaches provides a structured investigation that moves from the content of films to audience responses, textual similarities and relationships between actors. Rather than treating the analytical techniques as separate investigations, the project uses them to examine complementary aspects of the same film dataset.
+
+## 1.2 Research Aim
+
+This analytical report examines film content, audience ratings and actor collaboration networks using sampled film data collected from TMDb. The analysis focuses on the themes present in film descriptions, differences in audience ratings across genres, patterns in textual similarity between films, and relationships between actors through their shared participation in films. Overall, these analyses provide an integrated view of film content, audience response and actor collaboration.
+
+## 1.3 Research Questions
+
+The research questions for the analysis:
+
+**RQ1:** What are the most frequent and distinctive words in film overviews?
+
+**RQ2:** Is there a significant difference in audience ratings between film genres?
+
+**RQ3:** Can films be grouped into meaningful clusters based on their textual descriptions?
+
+**RQ4:** How are actors connected through their participation in films, and which actors occupy central positions in the collaboration network?
+
+# 2. Data Collection
+
+## 2.1 Data Source
+
+The following data was collected and compiled from The Movies Database (TMDb). This database allows for direct information to be collected into R through Application Programming Interference (API). This project selected TMDb to focus on films, as their textual descriptions could allow for effective Hypothesis testing, Text analysis, Clustering, and Network analysis.
+
+## 2.2 Data Collection Process
+
+R was utilised to collect the data from TMDb. To connect the TMDb API, the "httr2" and "jsonlite" packages were loaded. To ensure the dataset compilation aligned appropriately with the research questions, filters were set for the films needed: 
+
+- The films were to be English based
+
+- The films were to be released between 2015-2025
+
+- The films needed at least 100 audience votes
+
+To ensure the dataset was reasonably sized, 25 pages of results were collected from the API. Each page contained 20 films, and 500 films in total. 
+
+The films were formatted into a table in R. 
+
+Once this data was collected, another API request was made to collect data on cast information. This was conducted to ensure effective data collection for the Network Analysis. This was stored seperately. 
+
+``` {r, eval=FALSE}
+## Load relevant packages
+library(httr2)
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(tidytext)
+
+## Check API token through TMBd for requesting
+Sys.getenv("TMDB_API_TOKEN") != ""
+
+```
+
+``` {r, eval=FALSE}
+# Collect FILM data and assign filters
+all_results <- list()
+
+for (page_number in 1:25) {
+  
+  response <- request(
+    "https://api.themoviedb.org/3/discover/movie"
+  ) |>
+    req_url_query(
+      with_original_language = "en", # English language
+      primary_release_date.gte = "2015-01-01", 
+      primary_release_date.lte = "2025-12-31", # films between 2015-2025
+      vote_count.gte = 100, # at least 100 votes
+      page = page_number # 25 pages
+    ) |>
+    req_headers(
+      Authorization = paste(
+        "Bearer",
+        Sys.getenv("TMDB_API_TOKEN")
+      )
+    ) |>
+    req_perform()
+  
+  page_data <- resp_body_json(response)
+  
+  all_results[[page_number]] <- page_data$results
+}
+
+## Extract selected film variables
+
+film_list <- unlist(
+  all_results,
+  recursive = FALSE
+)
+
+films <- bind_rows(
+  lapply(film_list, function(x) {
+    
+    data.frame(
+      id = x$id,
+      title = x$title,
+      overview = x$overview,
+      release_date = x$release_date,
+      genre_ids = paste(x$genre_ids, collapse = ","),
+      vote_average = x$vote_average,
+      vote_count = x$vote_count
+    )
+  })
+)
+
+## Collect actor data
+actor_data <- list()
+
+for (i in 1:nrow(films)) {
+  
+  credits_response <- request(
+    paste0(
+      "https://api.themoviedb.org/3/movie/",
+      films$id[i],
+      "/credits"
+    )
+  ) |>
+    req_headers(
+      Authorization = paste(
+        "Bearer",
+        Sys.getenv("TMDB_API_TOKEN")
+      )
+    ) |>
+    req_perform()
+  
+  credits_data <- resp_body_json(credits_response)
+  
+  actor_data[[i]] <- data.frame(
+    film_id = films$id[i],
+    film_title = films$title[i],
+    actor_id = sapply(
+      credits_data$cast,
+      function(x) x$id
+    ),
+    actor_name = sapply(
+      credits_data$cast,
+      function(x) x$name
+    )
+  )
+}
+
+
+## Combine actor records
+actor_data <- bind_rows(actor_data)
+
+```
+
+The film and actor datasets were saved as separate CSV files. This was to ensure the Network analysis could be completed effectively using the actor dataset. 
+
+The API collection code is included for transparency but was not executed during report generation, as the data had already been collected and saved as CSV files for use in the subsequent analysis.
+
+``` {r, eval=FALSE}
+## Save raw datasets
+## One row per film
+write.csv(
+  films,
+  "Data set/films_raw.csv",
+  row.names = FALSE
+)
+
+## One row per actor-film relationship
+write.csv(
+  actor_data,
+  "Data set/actor_data_raw.csv",
+  row.names = FALSE
+)
+```
+
+## 2.3 Variables Collected
+
+For each film, the following variables were collected for the analysis: 
+
+- Film ID 
+- Title
+- Overview (films desciption) 
+- Release Date
+- Genre IDs 
+- Vote Average 
+- Vote count 
+
+Additionally, for actor data, the following variables were collected 
+- Film ID 
+- Film title 
+- Actor ID 
+- Actor Name 
+
+Due to Film ID variable appearing in both datasets, connections to actor and film can be made later in the analysis
+
+## 2.4 Sample Size
+
+The final film dataset contains 500 films. Whereas the final cleaned actor dataset contains 27, 516 actor-film relationship. This dataset specifically is larger as one film can have many actors. 
+
+## 2.5 Data Collection Limitations
+
+Futhermore, this sample does include limitations. The filters applied exclude various areas of the films. Thus, the results do not represent every film in TMDb. The sample size was also lessened to 500, meaning all films applied with the respective filters could not be obtained. Only the first 25 pages of results from the API were selected. Another limitation may include missing or unavailable information to not be included within the analysis, as it depends on the available information present on TMDb. 
+
+# 3. Data Preparation
+
+## 3.1 Data Inspection
+
+The the 2 datasets, actor and film, were cleaned. The datasets were inspected to ensure all sample sizes were reflected appropriately. Then, missing values and blank spaces in film overviews were reviewed. Both outputs presented 0. Additionally, duplicates for both datasets were examined. The film dataset had 0 duplication, however, the actor dataset had 7 duplicates. This was inspected further by reviewing the actor-film relationship. It can be seen that each duplicate actor-film relationship appeared twice. Film IDs were also checked for consistency. The result was the expected 500 unique IDs. Finally, duplicate film titles were checked, with no duplicate titles identified. 
+
+```{r}
+## Upload raw datasets
+
+films_data <- read.csv("Data set/films_raw.csv")
+actor_data <- read.csv("Data set/actor_data_raw.csv")
+
+## 3.1 Inspect the data
+
+## check sample sizes
+dim(films_data)
+dim(actor_data)
+
+## check variable names
+names(films_data)
+names(actor_data)
+
+## check for missing values
+colSums(is.na(films_data))
+colSums(is.na(actor_data))
+
+## check for any blank film overviews
+sum(films_data$overview == "")
+
+## check for duplicates
+sum(duplicated(films_data))
+sum(duplicated(actor_data))
+## dataset has 7 duplicates
+
+## check for duplicate actor-film relationships
+actor_data |>
+  count(film_id, actor_id, actor_name) |>
+  filter(n > 1)
+
+## check film IDs across dataset
+length(unique(films_data$id))
+sum(!actor_data$film_id %in% films_data$id)
+
+## check for duplicate inside film titles
+sum(duplicated(films_data$title))
+```
+
+## 3.2 Data Cleaning
+
+As the actor-film relationship showed 7 duplicates, cleaning was required to resolve the issue and improve data quality. The same actor appeared in the film twice. The duplicates were removed using the 'distinct' function.
+
+Due to the other results showcasing zero missing values, blank spaces, or other duplicates within the film dataset, no further cleaning was required both datasets were prepared for analysis. 
+
+```{r}
+## Remove duplicate records from actor dataset
+actor_data <- actor_data |>
+  distinct()
+
+## check duplicates removal 
+sum(duplicated(actor_data))
+dim(actor_data) ## check rows to ensure removal
+```
+
+```{r, eval=FALSE}
+## Save cleaned datasets
+write.csv(
+  films_data,
+  "Data set/films_cleaned.csv",
+  row.names = FALSE
+)
+write.csv(
+  actor_data,
+  "Data set/actor_data_cleaned.csv",
+  row.names = FALSE
+)
+```
+
+# 4. Text Analysis
+
+## Research Question 1
+
+**What are the most frequent and distinctive words in film overviews?**
+
+## 4.1 Method
+
+### 4.1.1 Text Preprocessing
+
+Firstly, before text analysis, the 500 film overviews were cleaned. The cleaning involved converting special characters, removing numbers, removing punctuation and extra spaces, making all words lowercase for R readability, removed stop-words, and stemmed words into their basic/shorter form. To ensure no documents were lost during this process, the length was checked for 500 film descriptions. 
+
+```{r}
+# Access film descriptions to put into text collection
+corpus = Corpus(VectorSource(films_data$overview))
+
+# Utililise ASCII conversion to handle special characters
+corpus = tm_map(
+  corpus,
+  function(x) iconv(x, to = "ASCII", sub = " ")
+)
+
+# remove numbers from film descriptions
+corpus = tm_map(corpus, removeNumbers)
+# remove punctuation 
+corpus = tm_map(corpus, removePunctuation)
+# tidy text by removing extra spaces
+corpus = tm_map(corpus, stripWhitespace)
+# convert all words to lower case for R readability 
+corpus = tm_map(corpus, tolower)
+# remove common filler words
+corpus = tm_map(corpus, removeWords, stopwords())
+# shorten words to basic form
+corpus = tm_map(corpus, stemDocument)
+# check length to ensure films are not lost 
+length(corpus)
+
+```
+
+### 4.1.2 Find Frequent Words
+
+A Term Document Matrix was created to present the cleaned film overviews and record the frequency of each word across the film descriptions. The individual word frequencies were then summed and arranged from highest occurring to lowest occurring across the 500 films to identify the top 20 words. 
+
+```{r}
+# turn film descriptions TDM
+films_tdm = TermDocumentMatrix(corpus)
+# turn into R matrix
+films_mx = as.matrix(films_tdm)
+# count how many times each word appears
+words = rowSums(films_mx)
+# put words in order from most frequent to least frequent
+words_order = order(words, decreasing = TRUE)
+# top 20 words
+top_words = names(words)[words_order[1:20]]
+top_words
+# identify no. word frequency
+top_word_counts = words[words_order[1:20]]
+top_word_counts
+```
+
+### 4.1.3 TF-IDF Weighted Film Description Word Cloud
+
+The TF-IDF weighting frequency was applied to identify words that were distinctive across the film overviews. This reflects the word weights rather than the frequency alone.
+
+```{r}
+# Develop a weighted word frequency word visual for distinctiveness 
+
+# weightTfIdf() requires a term-document matrix.
+films_tdmw = weightTfIdf(films_tdm)
+
+# get weighted term document matrix
+films_weighted_mx = as.matrix(films_tdmw)
+
+# sum weighted frequencies across documents.
+freqsw = rowSums(films_weighted_mx)
+
+#order tf-idf weights from highest to lowest
+weighted_order = order(freqsw, decreasing = TRUE)
+
+# show top 20
+top_weighted_words = names(freqsw)[weighted_order[1:20]]
+top_weighted_words
+
+#show tf-idf weights
+top_weighted_counts = freqsw[weighted_order[1:20]]
+top_weighted_counts
+
+```
+
+## 4.2 Results
+
+The top 3 most frequently occurring words included world (114), new (111), and find (81). The lowest 3 of the top 20 words included friend (44), danger (42), discov (42), and turn (40). This provides a basic overview of the most common words used in film descriptions. 
+
+### 4.2.1 Unweighted Film Description Word Cloud
+
+Before initiating the TF-IDF weighting, a word cloud visualisation was constructed for the most commonly occurring terms that were identified through the Term Document Matrix.
+
+```{r}
+# Develop unweighted word frequency word visual
+
+# sum raw term frequencies across film documents
+freqs = rowSums(films_mx)
+freqs = freqs[!is.na(freqs)]
+
+wordcloud(
+  names(freqs),
+  freqs,
+  random.order = FALSE,
+  min.freq = 6,
+  max.words = 20,
+  colors = brewer.pal(8, "Dark2"),
+  scale = c(2, .5)
+)
+
+title("Unweighted Film Description Word Cloud")
+```
+
+This visual supports the outputs discussed earlier, highlighting the top common 20 words. There is a central focus on the words "world" and "new".
+
+### 4.2.2 TF-IDF Weighted Film Description Word Cloud
+
+```{r}
+wordcloud(
+  names(freqsw),
+  freqsw,
+  random.order = FALSE,
+  min.freq = 6,
+  max.words = 20,
+  colors = brewer.pal(8, "Dark2"),
+  scale = c(1, .5)
+)
+
+title("TF-IDF Weighted of Film Description Word Cloud")
+```
+
+This visual shows a prominence on words like "world", "famili", and "new", with these 3 words having the highest weighting.
+
+## 4.3 Interpretation
+
+This text analysis provides complementary perspectives through the 2 different approaches. The unweighted word cloud visual, along with TDM demonstrated the top 20 most frequently occurring words, whilst the TF-IDF weighted analysis provided greater emphasis on words that are more unique in the film descriptions. 
+
+It is important to note an overlap between both approaches. While terms such as world, family, new, force, find, and young appear in both, the TF-IDF results introduced terms such as war and live in the top 20. This does indicate that the frequency and distinctiveness do not produce identical rankings. 
+
+Overall, the analysis provides the frequency and distinctiveness of terms, directly addressing RQ 1. However, these words cannot be established into particular groups, or if they occur in the same films. Therefore, the clustering analysis builds on these findings and determines whether films can be grouped based on similarities found in the film descriptions. 
+
+# 5. Hypothesis Testing
+
+## Research Question 2
+
+**Is there a significant difference in audience ratings between film genres?** 
+
+## 5.1 Method
+
+A one-way analysis of variance (ANOVA) was used to look into whether mean audience ratings are different between the primary film genres. The response variable was vote_average, while primary_genre was used as the categorical explanatory variable. Each film was assigned its first-listed genre as its primary genre.
+
+The null hypothesis (H0) states that the mean audience rating is the same among all primary film genres. The other hypothesis (H1) states that at least one primary film genre has a different mean audience rating.
+
+A significance level of 0.05 was used. ANOVA was selected because the research question compares the mean value of a numerical variable across multiple categorical groups.
+
+```{r}
+# Load the cleaned film dataset
+films_data <- read.csv(
+  "Data set/films_cleaned.csv",
+  stringsAsFactors = FALSE
+)
+
+# TMDb genre ID lookup
+genre_lookup <- c(
+  "28" = "Action",
+  "12" = "Adventure",
+  "16" = "Animation",
+  "35" = "Comedy",
+  "80" = "Crime",
+  "99" = "Documentary",
+  "18" = "Drama",
+  "10751" = "Family",
+  "14" = "Fantasy",
+  "36" = "History",
+  "27" = "Horror",
+  "10402" = "Music",
+  "9648" = "Mystery",
+  "10749" = "Romance",
+  "878" = "Science Fiction",
+  "10770" = "TV Movie",
+  "53" = "Thriller",
+  "10752" = "War",
+  "37" = "Western"
+)
+
+# Extract the first-listed genre ID
+films_data$primary_genre_id <- sapply(
+  strsplit(films_data$genre_ids, ","),
+  `[`,
+  1
+)
+
+# Convert genre ID to genre name
+films_data$primary_genre <- unname(
+  genre_lookup[films_data$primary_genre_id]
+)
+
+# Prepare data for hypothesis testing
+genre_data <- films_data |>
+  filter(
+    !is.na(vote_average),
+    !is.na(primary_genre)
+  )
+```
+
+```{r}
+# One-way ANOVA
+
+anova_model <- aov(
+  vote_average ~ primary_genre,
+  data = genre_data
+)
+
+summary(anova_model)
+```
+
+The mean audience rating for each primary genre was also calculated to describe the observed differences between groups.
+
+```{r}
+# Mean audience rating by primary genre
+
+genre_means <- genre_data |>
+  group_by(primary_genre) |>
+  summarise(
+    n = n(),
+    mean_rating = mean(vote_average),
+    median_rating = median(vote_average)
+  ) |>
+  arrange(desc(mean_rating))
+
+genre_means
+```
+
+## 5.2 Results
+
+The one-way ANOVA showed a statistically significant difference in mean audience ratings between the primary film genres: F(16, 483) = 3.788, p < 0.001. Since the p-value was under the significance level of 0.05, the null hypothesis was rejected.
+
+This tells us that the mean audience ratings were not the same across all primary film genres. The descriptive results showed that mean ratings were different between genres. Western films had the highest mean rating of (M = 7.42), then Animation at (M = 7.41) and War at (M = 7.39). Although, the Western category had only two films, so this result should be interpreted with caution. Drama also had a relatively high mean rating of (M = 7.33) based on 52 films.
+
+Furthermore, Horror and Science Fiction had the lowest mean ratings at (M = 6.76), followed by Fantasy at (M = 6.82) and Thriller at (M = 6.83).
+
+The distribution of audience ratings across the primary genres is shown in the boxplot below.
+
+```{r}
+# Visualise audience ratings by primary genre
+
+boxplot(
+  vote_average ~ primary_genre,
+  data = genre_data,
+  las = 2,
+  xlab = "Primary Genre",
+  ylab = "Audience Rating",
+  main = "Audience Ratings by Primary Film Genre"
+)
+```
+
+## 5.3 Interpretation
+
+The hypothesis testing results proves that audience ratings were different across primary film genres in the sampled TMDb dataset. Therefore, RQ2 is supported, as there was a statistically significant difference in mean audience ratings between the genre groups.
+
+The boxplot also shows variation in the distribution of ratings across the genres, with some having higher or lower typical ratings than others. Although, the ANOVA only tells us that at least one genre is different from another; it does not show which specific pairs of genres are significantly different.
+
+Furthermore, the results should be interpreted in the context of the uneven number of films within each genre. Specifically, the Western category had only two films, meaning its high mean rating may not be representative of Western films in a broader sense.
+Overall, the findings suggest that primary film genre is associated with differences in audience ratings.
+
+# 6. Clustering
+
+## Research Question 3
+
+**Can films be grouped into meaningful clusters based on their textual descriptions?**
+
+## 6.1 Method
+
+The clustering analysis looked into whether films can be grouped according to similarities in their textual descriptions. First, the film overviews were cleaned using the same preprocessing steps applied in the text analysis, which includes removing numbers and punctuation, converting text to lowercase, removing stopwords and stemming words.
+
+The cleaned film descriptions were defined using TF-IDF weighting. The resulting TF-IDF vectors were normalised so that films could be compared based on the relative composition of their textual descriptions rather than the overall length of the description.
+
+Then, K-means clustering was used to group films depending on their similarities in their textual descriptions. The elbow method was used to identify the within-cluster sum of squares across different values of k. The elbow curve did not show a sharply defined point, so six clusters were selected as a practical choice that provided interpretable groups while avoiding an excessive number of clusters.
+
+The resulting clusters were examined using their most prominent terms and example films. Then, principal component analysis (PCA) was used to provide a two-dimensional visualisation of the cluster structure. Furthermore, K-means uses Euclidean distance, and the unit-length normalisation makes this distance represent the cosine-distance relationship between the TF-IDF vectors.
+
+
+### 6.1.1 Text Representation
+
+```{r}
+# Create a corpus from film overviews
+
+corpus <- VCorpus(VectorSource(films_data$overview))
+
+corpus <- tm_map(
+  corpus,
+  content_transformer(function(x) iconv(x, to = "ASCII", sub = " "))
+)
+
+corpus <- tm_map(corpus, removeNumbers)
+corpus <- tm_map(corpus, removePunctuation)
+
+corpus <- tm_map(
+  corpus,
+  content_transformer(tolower)
+)
+
+corpus <- tm_map(
+  corpus,
+  removeWords,
+  stopwords()
+)
+
+corpus <- tm_map(corpus, stripWhitespace)
+corpus <- tm_map(corpus, stemDocument)
+
+# Create TF-IDF matrix
+
+films_tdm <- TermDocumentMatrix(corpus)
+
+tfidf_tdm <- weightTfIdf(films_tdm)
+
+# Convert to matrix with films as rows
+
+tfidf_mx <- t(as.matrix(tfidf_tdm))
+
+# Normalise the TF-IDF vectors
+
+tfidf_norm <- tfidf_mx / sqrt(rowSums(tfidf_mx^2))
+
+# Check dimensions
+
+dim(tfidf_norm)
+```
+
+### 6.1.2 Choosing the Number of Clusters
+
+```{r}
+# Elbow method
+
+set.seed(123)
+
+k_range <- 2:10
+
+wss <- numeric(length(k_range))
+
+for (i in seq_along(k_range)) {
+  km <- kmeans(
+    tfidf_norm,
+    centers = k_range[i],
+    nstart = 25,
+    iter.max = 100
+  )
+  
+  wss[i] <- km$tot.withinss
+}
+
+k_eval <- data.frame(
+  k = k_range,
+  wss = wss
+)
+
+k_eval
+```
+
+```{r}
+# Elbow plot
+
+plot(
+  k_eval$k,
+  k_eval$wss,
+  type = "b",
+  xlab = "Number of clusters (k)",
+  ylab = "Within-cluster sum of squares",
+  main = "Elbow Method for Choosing the Number of Clusters"
+)
+```
+
+### 6.1.3 Final K-means Clustering 
+
+```{r}
+# Final k-means clustering
+
+K <- 6
+
+set.seed(123)
+
+km_final <- kmeans(
+  tfidf_norm,
+  centers = K,
+  nstart = 50,
+  iter.max = 100
+)
+
+# Add cluster assignments to the film dataset
+
+films_cl <- films_data
+
+films_cl$cluster <- factor(km_final$cluster)
+
+# Number of films in each cluster
+
+table(films_cl$cluster)
+```
+
+### 6.1.4 Interpreting the Clusters
+
+```{r}
+# Top terms in each cluster
+
+top_terms <- lapply(
+  levels(films_cl$cluster),
+  function(cl) {
+    
+    centre <- colMeans(
+      tfidf_norm[films_cl$cluster == cl, , drop = FALSE]
+    )
+    
+    names(
+      sort(centre, decreasing = TRUE)
+    )[1:8]
+  }
+)
+
+names(top_terms) <- paste(
+  "Cluster",
+  levels(films_cl$cluster)
+)
+
+sapply(
+  top_terms,
+  paste,
+  collapse = ", "
+)
+```
+
+### 6.1.5 Example Films
+
+```{r}
+# Example films from each cluster
+
+for (cl in levels(films_cl$cluster)) {
+  
+  cat("\nCluster", cl, ":\n")
+  
+  print(
+    films_cl |>
+      filter(cluster == cl) |>
+      select(title) |>
+      head(4)
+  )
+}
+```
+
+### 6.1.6 Visualising the Clusters
+
+```{r}
+# PCA visualisation of the clusters
+
+pc <- prcomp(
+  tfidf_norm,
+  scale. = FALSE
+)
+
+plot_df <- data.frame(
+  PC1 = pc$x[, 1],
+  PC2 = pc$x[, 2],
+  cluster = films_cl$cluster
+)
+
+plot(
+  plot_df$PC1,
+  plot_df$PC2,
+  col = as.numeric(plot_df$cluster),
+  pch = 19,
+  xlab = "PC1",
+  ylab = "PC2",
+  main = "Film Clusters Using Principal Components"
+)
+
+legend(
+  "topright",
+  legend = levels(plot_df$cluster),
+  col = 1:6,
+  pch = 19,
+  title = "Cluster"
+)
+```
+
+## 6.2 Results
+
+The elbow analysis showed a gradual decrease in within-cluster sum of squares as the number of clusters increased. Since there was no sharply defined elbow, a six-cluster solution was then used to provide interpretable groups without using too many clusters.
+
+The six clusters were uneven in size, Cluster 2 was the largest and Cluster 6 was the smallest. The main characteristics of each cluster can be seen below
+
+
+| Cluster | Number of Films | Main Terms / Theme | Example Films |
+|---|---:|---|---|
+| 1 | 96 | Action, conflict and large-scale threats (*power*, *war*, *save*, *threat*, *world*) | *Avengers: Endgame*; *Avengers: Infinity War* |
+| 2 | 170 | Adventure and mystery (*find*, *mysteri*, *young*, *journey*, *island*) | *Blade Runner 2049*; *Joker* |
+| 3 | 69 | Dark mystery, crime and thriller themes (*behind*, *secret*, *past*, *dark*, *investig*) | *Resident Evil: Welcome to Raccoon City*; *The Batman* |
+| 4 | 49 | Action, espionage and missions (*mission*, *hunt*, *agent*, *forc*, *team*, *Ethan*) | *War of the Worlds*; *Top Gun: Maverick* |
+| 5 | 102 | Family, relationships and life stories (*famili*, *stori*, *love*, *life*, *child*, *music*) | *Spider-Man: No Way Home*; *Oppenheimer* |
+| 6 | 14 | Games and entertainment (*game*, *video*, *player*, *danger*, *Jumanji*) | *The Housemaid*; *The Running Man* |
+
+The cluster terms and example films suggest that the groups captured different textual themes rather than definitive film genres.
+
+The PCA visualisation shows some separation between the six clusters, although there is overlap between several groups. This suggests that the film descriptions contain some distinguishable textual patterns, but the clusters are not completely distinct.
+
+## 6.3 Interpretation
+
+The clustering analysis provides evidence that films can be clustered based on their similarities in textual descriptions. The most common terms and example films suggested that the clusters showed different narrative themes, including action and conflict, mystery and adventure, darker thriller narratives, espionage and missions.
+
+Although, the clusters should not be seen as definite film genres. The clustering was based on the vocabulary contained in the film descriptions rather than the genre labels assigned to the films.
+
+The uneven cluster sizes, specifically the small size of Cluster 6, suggest that some textual themes were much more common than others in the sample.
+
+Additionally, the lack of a sharply defined elbow means that six clusters represent a practical analytical choice rather than an objectively optimal number of groups.
+
+Overall, RQ3 is supported to an extent: the films could be grouped into interpretable clusters based on similarities in their textual descriptions, but the strength and distinctness of the groups differ.
+
+
+# 7. Network Analysis
+
+## Research Question 4
+
+**How are actors connected through their participation in films, and which actors occupy central positions in the collaboration network?**
+
+## 7.1 Method
+
+An actor collaboration network was created, utilising the cleaned TMDb actor dataset. Each node represented an actor, and an edge represented the 2 actors appearing in the same film. The network utilised an undirected approach as the actor nodes show a mutual relationship. The edges were weighted according to the number of films in which each pair of actors appeared together in. 
+
+The resulting network contained 20, 670 actors and 1,041, 189 edges. The network structure was analysed using degree distribution, degree centrality and eigenvector centrality. Degree centrality aimed to identify the actors with the largest number of distinct direct collaborators. While the eigenvector centrality was used to identify actors who were connected to other well connected actors. Since the network contained 2 components, the eigenvector centrality was calculated on the larger connected component. The collaboration strength was also examined as a weighted measure for the repeated collaboration. 
+
+The network overview was visualised, along with a smaller subset of top 30 actors with the highest degree centrality, to show the most highly connected part of the network.
+
+
+```{r}
+# Create actor pairs for each film
+
+actor_pairs <- actor_data %>%
+  inner_join(actor_data, by = "film_id") %>%
+  filter(actor_id.x < actor_id.y) %>%
+  select(
+    film_id,
+    actor1_id = actor_id.x,
+    actor1 = actor_name.x,
+    actor2_id = actor_id.y,
+    actor2 = actor_name.y
+  )
+
+# Combine repeated collaborations between the same pair of actors
+
+actor_edges <- actor_pairs %>%
+  group_by(actor1_id, actor1, actor2_id, actor2) %>%
+  summarise(
+    weight = n(),
+    .groups = "drop"
+  )
+
+# Create the actor collaboration network
+
+actor_vertices <- actor_data %>%
+  select(actor_id, actor_name) %>%
+  distinct()
+
+actor_network <- graph_from_data_frame(
+  d = actor_edges %>%
+    select(actor1_id, actor2_id, weight),
+  directed = FALSE,
+  vertices = actor_vertices
+)
+```
+
+## 7.2 Results
+
+The final actor collaboration network has 20,670 actors and 1,041,189 edges. This network was not fully connected, and naturally split into 2 components. 20, 646 actors were a part of the largest component, and 24 actors were a part of the smaller component. The network density was 0.00487, showing a low density of all potential actor pairings.
+
+```{r}
+# Basic network structure
+
+vcount(actor_network)
+ecount(actor_network)
+
+# Connected components
+
+is_connected(actor_network)
+components(actor_network)$no
+
+components_info <- components(actor_network)
+
+components_info$csize
+
+# Network density
+
+edge_density(actor_network)
+```
+
+The degree distribution shows a strong right skew. The degree ranges from 6-1,123, with a median of 76 and mean of around 100.7 collaborators. This shows a significant variation in the number of actors and their collaborations with unique co-stars. Most actors had considerably fewer connections than the small group of highly connected actors.
+
+```{r}
+# Degree centrality
+
+actor_degree <- degree(actor_network, mode = "all")
+
+summary(actor_degree)
+
+# Degree distribution
+
+degree_distribution <- data.frame(
+  degree = actor_degree
+)
+
+hist(
+  degree_distribution$degree,
+  breaks = 50,
+  main = "Degree Distribution of Actor Collaboration Network",
+  xlab = "Number of Direct Actor Collaborators",
+  ylab = "Number of Actors"
+)
+```
+
+The actors that had the highest degree centrality were J.K. Simmons (1,123), Stan Lee (953), Idris Elba (928), Margot Robbie (897) and Fred Tatasciore (883). This shows these actors had the largest number of distinct direct collaborators.
+
+```{r}
+# Top actors by degree
+
+degree_results <- data.frame(
+  actor_id = V(actor_network)$name,
+  actor_name = V(actor_network)$actor_name,
+  degree = actor_degree
+)
+
+degree_results <- degree_results %>%
+  arrange(desc(degree))
+
+head(degree_results, 10)
+```
+
+The collaboration strength showed a similar but slightly different rank because it counts the repeated collaborations between the same actors. J.K. Simmons (1,237) had the highest strength, followed by Stan Lee (1,121), Fred Tatasciore (1,018), Idris Elba (1,014) and Chris Evans (1,011). The Pearson correlation between degree and strength resulted in 0.990, which shows a very strong positive relationship as actors with the highest unique co-stars also tend to have the highest total movie counts.
+
+```{r}
+# Weighted degree (strength)
+
+actor_strength <- strength(actor_network, mode = "all")
+
+summary(actor_strength)
+
+# Top actors by collaboration strength
+
+strength_results <- data.frame(
+  actor_id = V(actor_network)$name,
+  actor_name = V(actor_network)$actor_name,
+  strength = actor_strength
+)
+
+strength_results <- strength_results %>%
+  arrange(desc(strength))
+
+head(strength_results, 10)
+
+# Relationship between degree and collaboration strength
+
+cor(actor_degree, actor_strength, method = "pearson")
+```
+
+For the largest connected component, Eigenvector was calculated. Naomi Weiland had the highest score, along with several actors with similar scores. As the scores are similar, the small differences should not be interpreted as substantial differences in network importance. 
+
+```{r}
+# Eigenvector centrality for the largest connected component
+
+largest_component <- components(actor_network)$membership == 
+  which.max(components(actor_network)$csize)
+
+main_network <- induced_subgraph(
+  actor_network,
+  vids = V(actor_network)[largest_component]
+)
+
+main_eigenvector <- eigen_centrality(
+  main_network,
+  directed = FALSE,
+  weights = E(main_network)$weight
+)$vector
+
+# Top actors by eigenvector centrality
+
+main_eigenvector_results <- data.frame(
+  actor_id = V(main_network)$name,
+  actor_name = V(main_network)$actor_name,
+  eigenvector = main_eigenvector
+)
+
+main_eigenvector_results <- main_eigenvector_results %>%
+  arrange(desc(eigenvector))
+
+head(main_eigenvector_results, 10)
+```
+
+The full network visualisation displays all actors but only shows a sample of 5,000 edges. This is to improve readability and computational efficiency. However, the network statistics and centrality measures were calculated on the uncut network.
+
+```{r}
+set.seed(123)
+
+# Sample 5,000 edges for visualisation
+
+sampled_edges <- sample(
+  seq_len(ecount(actor_network)),
+  size = 5000
+)
+
+# Keep all actors but display only the sampled edges
+
+sampled_graph <- delete_edges(
+  actor_network,
+  E(actor_network)[-sampled_edges]
+)
+
+# Generate simple random positions
+
+sampled_layout <- matrix(
+  runif(vcount(sampled_graph) * 2),
+  ncol = 2
+)
+
+# Plot the full-network overview
+
+plot(
+  sampled_graph,
+  layout = sampled_layout,
+  vertex.size = 0.5,
+  vertex.label = NA,
+  vertex.frame.color = NA,
+  edge.width = 0.2,
+  edge.color = "grey70",
+  main = "Actor Collaboration Network - Full Network Overview"
+)
+```
+
+To visualise a cleaner network of high connections, a graph containing Top 30 actors with the highest degree centrality was created. This had 30 actors, and 159 edges.
+
+```{r}
+# Select the 30 actors with the highest degree
+
+top_30_ids <- V(actor_network)$name[
+  order(actor_degree, decreasing = TRUE)[1:30]
+]
+
+top_30_network <- induced_subgraph(
+  actor_network,
+  vids = top_30_ids
+)
+
+# Plot the top-30 degree subgraph
+
+set.seed(123)
+
+top_30_layout <- layout_with_fr(top_30_network)
+
+plot(
+  top_30_network,
+  layout = top_30_layout,
+  vertex.size = 8,
+  vertex.label = V(top_30_network)$actor_name,
+  vertex.label.cex = 0.6,
+  vertex.label.color = "black",
+  vertex.frame.color = NA,
+  edge.width = 1,
+  edge.color = "grey60",
+  main = "Top 30 Actors by Degree Centrality"
+)
+```
+
+## 7.3 Interpretation
+
+Within the network analysis, the actor collaboration shows a highly uneven distribution. Even though there are one million actor pair relationships, the low density proves each actor is only connected to a small proportion of the total actor population of this sample. The degree centrality is highlighted with broad collaboration networks, with J.K Simmons having the largest number of unique collaborators. The strong correlation of degree and strength also shows actors with most unique collaborations also have the highest total movie counts. The eigenvector centrality did offer a different perspective as while degree centrality had J.K Simmons first, eigenvector centrality found Naomi Weiland as the most central actor. Overall, this shows that a relatively small group of actors occupy the most dominant positions in the connected network. 
+
+# 8. Overall Findings
+
+The four analyses provide complementary perspectives on the 500-film TMDb dataset, focused on film content, audience ratings, textual similarities and actor collaboration. Firstly, the text analysis identified recurring and distinctive vocabulary within film overviews, with terms such as world, new and find appearing frequently. Then, the hypothesis testing found a statistically significant difference in mean audience ratings across primary genres, with the one-way ANOVA producing F(16, 483) = 3.788 and p < 0.001. Additionally, the clustering analysis identified six groups of films based on similarities in their descriptions, reflecting themes such as action and conflict, adventure and mystery, thriller narratives. However, overlap between clusters indicated that these themes were not completely distinct.
+
+Furthermore, the network analysis revealed a large but sparse actor collaboration network that had 20,670 actors and 1,041,189 edges across two connected components. The degree and eigenvector centrality highlighted highly connected and influential actors, while the strong correlation between degree and collaboration strength suggested that actors with more collaborators generally also had higher overall collaboration activity. Overall, the findings demonstrate that the TMDb dataset reveals different patterns when examined through content, audience ratings, textual similarity and network relationships, providing a broader view of film characteristics and actor collaboration within the sampled dataset.
+
+# 9. Limitations
+
+Several limitations should be considered when interpreting the findings:
+The dataset was collected using specific TMDb API filters, including English-language films released between 2015 and 2025 with at least 100 audience votes, and was capped to the first 25 pages of results which contained 500 films. As a result, the sample does not showcase all films available on TMDb and the findings may be influenced by the selected criteria and the completeness of the available sample data. Similarly, the actor collaboration network only reflects actors and relationships that are within the sampled films and should not be interpreted as a representation of the film industry as a whole.
+
+Additionally, the analytical methods also involved several simplifying assumptions. For example, the text analysis was based on film overviews which means individual words may not fully show the context or meaning of each film, while stemming may reduce the interpretability of some terms. Then, for hypothesis testing, each film was assigned its first-listed genre as its primary genre, despite the films potentially belonging to multiple genres. Furthermore, genre groups were also uneven in size, some containing very few films, such as Western that had only two observations. Therefore, the ANOVA identifies differences between genre groups but does not determine which specific groups differ. For clustering, the six-cluster solution was selected as a practical and interpretable choice because the elbow method did not show a clear optimum, and overlap in the PCA plot suggests that the clusters were not completely distinct. Also, the network defines actor relationships through co-appearance in films, which does not grasp the nature or strength of those relationships beyond repeated collaborations. Finally, betweenness centrality was not calculated due to the size of the network, and the full-network visualisation used a representative sample of edges, although all network statistics and centrality measures were calculated using the complete network.
+
+# References 
+
+The Movie Database (TMDb). (2026). TMDb API documentation. 
+https://developer.themoviedb.org/
+
+## Code and Data Repository
+
+The R code and datasets used for this investigation are available in the following GitHub repository:
+
+https://github.com/zoyaa19/COMP3020-Social-Web-Analytics 
